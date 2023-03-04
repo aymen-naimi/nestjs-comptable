@@ -2,12 +2,16 @@ import { Injectable, HttpStatus, HttpException } from '@nestjs/common';
 import { ValidationResponse } from '../dto/validation-response.dto';
 import { CONSTANTES } from './constantes';
 import { Reason } from '../dto/reason.dto';
-import * as moment from 'moment';
+import * as dayjs from 'dayjs';
+import * as isSameOrBefore from 'dayjs/plugin/isSameOrBefore';
+dayjs.extend(isSameOrBefore);
 import { ReasonTypes, ReasonTitles } from './enums';
 import { CheckpointDto } from '../dto/checkpoint.dto';
 import { MovementDto } from '../dto/movement.dto';
 
-type ObjectWithDate = CheckpointDto | MovementDto;
+interface ObjectWithDate {
+  date: string;
+}
 
 @Injectable()
 export class MovementsService {
@@ -29,7 +33,7 @@ export class MovementsService {
 
     const usedMovements: MovementDto[] = this.removeUnusedMovements(
       movements,
-      balances
+      balances,
     );
 
     reasons = this.validate(usedMovements, balances);
@@ -91,9 +95,9 @@ export class MovementsService {
    * callback function to sort balances or movements
    */
   private callbackSortDate(a: ObjectWithDate, b: ObjectWithDate): number {
-    if (moment(a.date).isBefore(moment(b.date))) {
+    if (dayjs(a.date).isBefore(dayjs(b.date))) {
       return -1;
-    } else if (moment(a.date).isAfter(moment(b.date))) {
+    } else if (dayjs(a.date).isAfter(dayjs(b.date))) {
       return 1;
     } else {
       return 0;
@@ -110,9 +114,9 @@ export class MovementsService {
   ): MovementDto[] {
     return movements.reduce((acc: MovementDto[], mov: MovementDto) => {
       if (
-        moment(mov.date).isAfter(moment(balances[0].date)) &&
-        moment(mov.date).isSameOrBefore(
-          moment(balances[balances.length - 1].date),
+        dayjs(mov.date).isAfter(dayjs(balances[0].date)) &&
+        dayjs(mov.date).isSameOrBefore(
+          dayjs(balances[balances.length - 1].date),
         )
       ) {
         return [...acc, mov];
@@ -148,29 +152,40 @@ export class MovementsService {
       const movs: MovementDto[] = [];
       while (
         movements[0] &&
-        moment(movements[0].date).isAfter(moment(balances[i].date)) &&
-        moment(movements[0].date).isSameOrBefore(moment(balances[i + 1].date))
+        dayjs(movements[0].date).isAfter(dayjs(balances[i].date)) &&
+        dayjs(movements[0].date).isSameOrBefore(dayjs(balances[i + 1].date))
       ) {
         movs.push(movements.shift() as MovementDto);
       }
 
-      const movementsVariation: number = movs.reduce((acc, item) => {
-        return acc + item.amount;
-      }, 0);
-      const balancesVariation: number =
-        balances[i + 1].balance - balances[i].balance;
-
-      if (movementsVariation !== balancesVariation) {
-        errors.push({
-          type: ReasonTypes.MOVEMENTS_IS_NOT_COMPATIBLE_CHECPOINTS,
-          title: ReasonTitles.MOVEMENTS_IS_NOT_COMPATIBLE_CHECPOINTS,
-          detail: `the mouvements between ${balances[i].date} and ${
-            balances[i + 1].date
-          } are invalid`,
-        });
-      }
+      this.updateErrors(errors, movs, balances[i], balances[i + 1]);
     }
 
     return errors;
+  }
+
+  private updateErrors(
+    errors: Reason[],
+    movs: MovementDto[],
+    currentCheck: CheckpointDto,
+    nextCheck: CheckpointDto,
+  ) {
+    const balancesVariation: number = nextCheck.balance - currentCheck.balance;
+
+    const movementsVariation: number = movs.reduce((acc, item) => {
+      return acc + item.amount;
+    }, 0);
+
+    if (!this.compareFloats(movementsVariation, balancesVariation)) {
+      errors.push({
+        type: ReasonTypes.MOVEMENTS_IS_NOT_COMPATIBLE_CHECPOINTS,
+        title: ReasonTitles.MOVEMENTS_IS_NOT_COMPATIBLE_CHECPOINTS,
+        detail: `the mouvements between ${currentCheck.date} and ${nextCheck.date} are invalid`,
+      });
+    }
+  }
+
+  private compareFloats(a: number, b: number) {
+    return parseFloat(a.toFixed(2)) === parseFloat(b.toFixed(2));
   }
 }
